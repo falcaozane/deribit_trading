@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <cmath>
 #include <thread>
+#include <unistd.h>
 #include <sys/resource.h>
+#include <sys/time.h>
 #include <pthread.h>
+
 #ifdef __linux__
     #include <sys/sysinfo.h>
     #include <sys/mman.h>
@@ -159,9 +162,6 @@ void ThreadUtils::setThreadAffinity(int cpuId) {
 void ThreadUtils::setThreadName(const std::string& name) {
 #ifdef __linux__
     pthread_setname_np(pthread_self(), name.c_str());
-#elif defined(_WIN32)
-    // Windows doesn't have a direct equivalent
-    // Could use Windows Debug API but it's only for debugging
 #endif
 }
 
@@ -169,23 +169,25 @@ int ThreadUtils::getCurrentCPU() {
 #ifdef __linux__
     return sched_getcpu();
 #else
-    return -1; // Not supported on other platforms
+    return -1;
 #endif
 }
 
 // MemoryUtils implementation
 size_t MemoryUtils::getProcessMemoryUsage() {
 #ifdef __linux__
-    long rss = 0L;
     FILE* fp = fopen("/proc/self/statm", "r");
-    if (fp == nullptr) return 0;
+    if (!fp) return 0;
     
+    long rss = 0;
     if (fscanf(fp, "%*s%ld", &rss) != 1) {
         fclose(fp);
         return 0;
     }
     fclose(fp);
-    return (size_t)rss * (size_t)sysconf(_SC_PAGESIZE);
+    
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    return static_cast<size_t>(rss) * static_cast<size_t>(page_size);
 #elif defined(_WIN32)
     PROCESS_MEMORY_COUNTERS pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {

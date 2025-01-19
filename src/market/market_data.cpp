@@ -1,6 +1,8 @@
 #include "market/market_data.hpp"
-#include <iostream>
+#include "utils/logger.hpp"
 #include <sstream>
+
+namespace deribit {
 
 MarketDataManager::MarketDataManager(const std::string& wsUrl)
     : m_wsUrl(wsUrl)
@@ -21,7 +23,8 @@ void MarketDataManager::connect() {
         m_webSocket->connect(m_wsUrl);
         m_isConnected = true;
     } catch (const std::exception& e) {
-        std::cerr << "WebSocket connection failed: " << e.what() << std::endl;
+        auto& logger = Logger::getInstance();
+        logger.error("WebSocket connection failed: ", e.what());
         m_isConnected = false;
         throw;
     }
@@ -38,70 +41,66 @@ bool MarketDataManager::isConnected() const {
     return m_isConnected;
 }
 
-void MarketDataManager::subscribeToOrderBook(const std::string& instrument) {
+void MarketDataManager::subscribe(const std::string& instrument,
+                                bool orderbook,
+                                bool trades,
+                                bool ticker) {
     std::lock_guard<std::mutex> lock(m_mutex);
     
-    // Initialize order book if it doesn't exist
-    initializeOrderBook(instrument);
-    
-    // Create subscription channel
-    std::string channel = createSubscriptionChannel(instrument, "book");
-    
-    // Subscribe if not already subscribed
-    if (!m_subscriptions[channel]) {
+    if (orderbook) {
+        std::string channel = createSubscriptionChannel(instrument, "book");
         m_webSocket->subscribe(channel);
         m_subscriptions[channel] = true;
     }
+    
+    if (trades) {
+        std::string channel = createSubscriptionChannel(instrument, "trades");
+        m_webSocket->subscribe(channel);
+        m_subscriptions[channel] = true;
+    }
+    
+    if (ticker) {
+        std::string channel = createSubscriptionChannel(instrument, "ticker");
+        m_webSocket->subscribe(channel);
+        m_subscriptions[channel] = true;
+    }
+
+    if (orderbook) {
+        initializeOrderBook(instrument);
+    }
+}
+
+void MarketDataManager::unsubscribe(const std::string& instrument,
+                                  bool orderbook,
+                                  bool trades,
+                                  bool ticker) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    
+    if (orderbook) {
+        std::string channel = createSubscriptionChannel(instrument, "book");
+        m_webSocket->unsubscribe(channel);
+        m_subscriptions[channel] = false;
+    }
+    
+    if (trades) {
+        std::string channel = createSubscriptionChannel(instrument, "trades");
+        m_webSocket->unsubscribe(channel);
+        m_subscriptions[channel] = false;
+    }
+    
+    if (ticker) {
+        std::string channel = createSubscriptionChannel(instrument, "ticker");
+        m_webSocket->unsubscribe(channel);
+        m_subscriptions[channel] = false;
+    }
+}
+
+void MarketDataManager::subscribeToOrderBook(const std::string& instrument) {
+    subscribe(instrument, true, false, false);
 }
 
 void MarketDataManager::unsubscribeFromOrderBook(const std::string& instrument) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    
-    std::string channel = createSubscriptionChannel(instrument, "book");
-    if (m_subscriptions[channel]) {
-        m_webSocket->unsubscribe(channel);
-        m_subscriptions[channel] = false;
-    }
-}
-
-void MarketDataManager::subscribeToTrades(const std::string& instrument) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::string channel = createSubscriptionChannel(instrument, "trades");
-    
-    if (!m_subscriptions[channel]) {
-        m_webSocket->subscribe(channel);
-        m_subscriptions[channel] = true;
-    }
-}
-
-void MarketDataManager::unsubscribeFromTrades(const std::string& instrument) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::string channel = createSubscriptionChannel(instrument, "trades");
-    
-    if (m_subscriptions[channel]) {
-        m_webSocket->unsubscribe(channel);
-        m_subscriptions[channel] = false;
-    }
-}
-
-void MarketDataManager::subscribeToTicker(const std::string& instrument) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::string channel = createSubscriptionChannel(instrument, "ticker");
-    
-    if (!m_subscriptions[channel]) {
-        m_webSocket->subscribe(channel);
-        m_subscriptions[channel] = true;
-    }
-}
-
-void MarketDataManager::unsubscribeFromTicker(const std::string& instrument) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::string channel = createSubscriptionChannel(instrument, "ticker");
-    
-    if (m_subscriptions[channel]) {
-        m_webSocket->unsubscribe(channel);
-        m_subscriptions[channel] = false;
-    }
+    unsubscribe(instrument, true, false, false);
 }
 
 std::shared_ptr<OrderBook> MarketDataManager::getOrderBook(const std::string& instrument) {
@@ -110,26 +109,20 @@ std::shared_ptr<OrderBook> MarketDataManager::getOrderBook(const std::string& in
     return (it != m_orderBooks.end()) ? it->second : nullptr;
 }
 
-void MarketDataManager::setOrderBookCallback(MarketDataCallback callback) {
+void MarketDataManager::setOrderBookCallback(OrderBookCallback callback) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_orderBookCallback = callback;
 }
 
-void MarketDataManager::setTradeCallback(MarketDataCallback callback) {
+void MarketDataManager::setMarketDataCallback(MarketDataCallback callback) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_tradeCallback = callback;
-}
-
-void MarketDataManager::setTickerCallback(MarketDataCallback callback) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_tickerCallback = callback;
+    m_marketDataCallback = callback;
 }
 
 void MarketDataManager::handleWebSocketMessage(const std::string& message) {
     try {
         nlohmann::json json = nlohmann::json::parse(message);
         
-        // Check if it's a subscription message
         if (json.contains("method") && json["method"] == "subscription") {
             auto params = json["params"];
             auto channel = params["channel"].get<std::string>();
@@ -137,32 +130,28 @@ void MarketDataManager::handleWebSocketMessage(const std::string& message) {
             
             // Parse channel to get instrument and type
             std::string instrument, type;
-            size_t pos = channel.find('.');
-            if (pos != std::string::npos) {
-                instrument = channel.substr(0, pos);
-                type = channel.substr(pos + 1);
+            size_t separator = channel.find('.');
+            if (separator != std::string::npos) {
+                instrument = channel.substr(0, separator);
+                type = channel.substr(separator + 1);
             }
             
-            // Process based on message type
+            // Route the update to appropriate handler
             if (type.find("book") != std::string::npos) {
                 processOrderBookUpdate(instrument, data);
                 if (m_orderBookCallback) {
                     m_orderBookCallback(instrument, "book", data);
                 }
-            } else if (type.find("trades") != std::string::npos) {
-                processTradeUpdate(instrument, data);
-                if (m_tradeCallback) {
-                    m_tradeCallback(instrument, "trades", data);
-                }
-            } else if (type.find("ticker") != std::string::npos) {
-                processTickerUpdate(instrument, data);
-                if (m_tickerCallback) {
-                    m_tickerCallback(instrument, "ticker", data);
+            } else if (type.find("trades") != std::string::npos || 
+                       type.find("ticker") != std::string::npos) {
+                if (m_marketDataCallback) {
+                    m_marketDataCallback(instrument, type, data);
                 }
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error processing WebSocket message: " << e.what() << std::endl;
+        auto& logger = Logger::getInstance();
+        logger.error("Error processing WebSocket message: ", e.what());
     }
 }
 
@@ -171,17 +160,10 @@ void MarketDataManager::processOrderBookUpdate(const std::string& instrument,
     std::lock_guard<std::mutex> lock(m_mutex);
     
     auto orderbook = getOrderBook(instrument);
-    if (!orderbook) {
-        return;
-    }
+    if (!orderbook) return;
     
-    // Check if it's a snapshot or update
-    bool isSnapshot = data.contains("type") && data["type"] == "snapshot";
-    
-    if (isSnapshot) {
-        // Process full orderbook snapshot
-        std::map<double, double> bids;
-        std::map<double, double> asks;
+    if (data.contains("type") && data["type"] == "snapshot") {
+        std::map<double, double> bids, asks;
         
         for (const auto& bid : data["bids"]) {
             bids[bid[0].get<double>()] = bid[1].get<double>();
@@ -193,28 +175,32 @@ void MarketDataManager::processOrderBookUpdate(const std::string& instrument,
         
         orderbook->updateFromSnapshot(bids, asks);
     } else {
-        // Process incremental update
-        if (data.contains("changes")) {
-            for (const auto& change : data["changes"]) {
-                std::string side = change[0].get<std::string>();
-                double price = change[1].get<double>();
-                double amount = change[2].get<double>();
-                
-                OrderSide orderSide = (side == "buy") ? OrderSide::BUY : OrderSide::SELL;
-                orderbook->processIncrementalUpdate(orderSide, price, amount);
-            }
+        for (const auto& change : data["changes"]) {
+            std::string side = change[0].get<std::string>();
+            double price = change[1].get<double>();
+            double amount = change[2].get<double>();
+            
+            orderbook->processIncrementalUpdate(
+                side == "buy" ? OrderSide::BUY : OrderSide::SELL,
+                price,
+                amount
+            );
         }
     }
 }
 
 void MarketDataManager::processTradeUpdate(const std::string& instrument, 
                                          const nlohmann::json& data) {
-    // Implement trade processing logic if needed
+    if (m_marketDataCallback) {
+        m_marketDataCallback(instrument, "trades", data);
+    }
 }
 
 void MarketDataManager::processTickerUpdate(const std::string& instrument, 
                                           const nlohmann::json& data) {
-    // Implement ticker processing logic if needed
+    if (m_marketDataCallback) {
+        m_marketDataCallback(instrument, "ticker", data);
+    }
 }
 
 void MarketDataManager::initializeOrderBook(const std::string& instrument) {
@@ -229,3 +215,5 @@ std::string MarketDataManager::createSubscriptionChannel(const std::string& inst
     oss << instrument << "." << type;
     return oss.str();
 }
+
+} // namespace deribit

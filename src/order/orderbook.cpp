@@ -101,12 +101,12 @@ double OrderBook::getSpread() const {
     return m_asks.begin()->first - m_bids.begin()->first;
 }
 
-std::map<double, PriceLevel> OrderBook::getBidLevels() const {
+BidMap OrderBook::getBidLevels() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_bids;
 }
 
-std::map<double, PriceLevel> OrderBook::getAskLevels() const {
+AskMap OrderBook::getAskLevels() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_asks;
 }
@@ -124,26 +124,23 @@ void OrderBook::clear() {
 }
 
 void OrderBook::updateFromSnapshot(const std::map<double, double>& bids,
-                                 const std::map<double, double>& asks) {
+                               const std::map<double, double>& asks) {
     std::lock_guard<std::mutex> lock(m_mutex);
     
-    // Clear existing price levels but keep active orders
     m_bids.clear();
     m_asks.clear();
     
-    // Update bid levels
     for (const auto& [price, volume] : bids) {
         m_bids[price] = PriceLevel();
         m_bids[price].totalVolume = volume;
     }
     
-    // Update ask levels
     for (const auto& [price, volume] : asks) {
         m_asks[price] = PriceLevel();
         m_asks[price].totalVolume = volume;
     }
     
-    // Re-add active orders to appropriate price levels
+    // Re-add active orders
     for (const auto& [orderId, order] : m_allOrders) {
         if (order->isActive()) {
             if (order->getSide() == OrderSide::BUY) {
@@ -158,53 +155,17 @@ void OrderBook::updateFromSnapshot(const std::map<double, double>& bids,
 void OrderBook::processIncrementalUpdate(OrderSide side, double price, double newVolume) {
     std::lock_guard<std::mutex> lock(m_mutex);
     
-    auto& levels = (side == OrderSide::BUY) ? m_bids : m_asks;
-    
-    if (std::abs(newVolume) < 1e-10) {  // Using small epsilon for floating point comparison
-        levels.erase(price);
+    if (side == OrderSide::BUY) {
+        if (std::abs(newVolume) < 1e-10) {
+            m_bids.erase(price);
+        } else {
+            m_bids[price].totalVolume = newVolume;
+        }
     } else {
-        auto& level = levels[price];
-        level.totalVolume = newVolume;
-        
-        // Adjust orders at this price level if necessary
-        double orderVolume = 0.0;
-        for (const auto& [orderId, order] : level.orders) {
-            orderVolume += order->getRemainingAmount();
+        if (std::abs(newVolume) < 1e-10) {
+            m_asks.erase(price);
+        } else {
+            m_asks[price].totalVolume = newVolume;
         }
-        
-        // If order volume exceeds total volume, proportionally reduce orders
-        if (orderVolume > newVolume) {
-            double ratio = newVolume / orderVolume;
-            for (const auto& [orderId, order] : level.orders) {
-                order->setAmount(order->getAmount() * ratio);
-            }
-        }
-    }
-}
-
-void OrderBook::removeOrderFromPriceLevel(std::shared_ptr<Order> order,
-                                        std::map<double, PriceLevel>& levels) {
-    auto levelIt = levels.find(order->getPrice());
-    if (levelIt != levels.end()) {
-        auto& level = levelIt->second;
-        level.orders.erase(order->getOrderId());
-        level.totalVolume -= order->getRemainingAmount();
-        
-        // Remove price level if no orders remain and volume is zero
-        if (level.orders.empty() && std::abs(level.totalVolume) < 1e-10) {
-            levels.erase(levelIt);
-        }
-    }
-}
-
-void OrderBook::addOrderToPriceLevel(std::shared_ptr<Order> order,
-                                   std::map<double, PriceLevel>& levels) {
-    auto& level = levels[order->getPrice()];
-    level.orders[order->getOrderId()] = order;
-    level.totalVolume += order->getRemainingAmount();
-    
-    // Ensure price level is removed if no volume remains
-    if (std::abs(level.totalVolume) < 1e-10) {
-        levels.erase(order->getPrice());
     }
 }

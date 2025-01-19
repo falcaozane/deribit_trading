@@ -2,22 +2,28 @@
 #include <fstream>
 #include <stdexcept>
 
-Config::Config() {
-    // Set default values
-    m_config = {
-        {"api_key", ""},
-        {"api_secret", ""},
-        {"ws_url", "wss://test.deribit.com/ws/api/v2"},
-        {"rest_url", "https://test.deribit.com/api/v2"},
-        {"max_order_size", 10.0},
-        {"min_order_size", 0.0001},
-        {"max_open_orders", 100},
-        {"websocket_threads", 2},
-        {"processing_threads", 4},
-        {"log_file", "trading_system.log"},
-        {"log_level", "INFO"}
-    };
+namespace deribit {
+
+namespace {
+    // Helper function to ensure thread-safe initialization
+    nlohmann::json getDefaultConfig() {
+        return {
+            {"api_key", "rXHCaw-T"},
+            {"api_secret", "294sD3YBhxuKIo6GXiwf3mQ4Oc-U7Bnt9emLhgeLfg0"},
+            {"ws_url", "wss://test.deribit.com/ws/api/v2"},
+            {"rest_url", "https://test.deribit.com/api/v2"},
+            {"max_order_size", 10.0},
+            {"min_order_size", 0.0001},
+            {"max_open_orders", 100},
+            {"websocket_threads", 2},
+            {"processing_threads", 4},
+            {"log_file", "trading_system.log"},
+            {"log_level", "INFO"}
+        };
+    }
 }
+
+Config::Config() : m_config(getDefaultConfig()) {}
 
 Config& Config::getInstance() {
     static Config instance;
@@ -36,7 +42,6 @@ void Config::loadFromFile(const std::string& filename) {
 }
 
 void Config::loadFromJson(const nlohmann::json& json) {
-    // Merge new config with existing one, preserving defaults for missing values
     m_config.merge_patch(json);
 }
 
@@ -52,8 +57,7 @@ T Config::getValue(const std::string& key, const T& defaultValue) const {
     return defaultValue;
 }
 
-std::string Config::getString(const std::string& key, 
-                            const std::string& defaultValue) const {
+std::string Config::getString(const std::string& key, const std::string& defaultValue) const {
     return getValue<std::string>(key, defaultValue);
 }
 
@@ -112,3 +116,11 @@ std::string Config::getLogFile() const {
 std::string Config::getLogLevel() const {
     return getString("log_level");
 }
+
+// Template instantiations within the namespace
+template int Config::getValue<int>(const std::string&, const int&) const;
+template double Config::getValue<double>(const std::string&, const double&) const;
+template bool Config::getValue<bool>(const std::string&, const bool&) const;
+template std::string Config::getValue<std::string>(const std::string&, const std::string&) const;
+
+} // namespace deribit

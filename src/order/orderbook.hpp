@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <cmath>
 #include "order/order.hpp"
 
 struct PriceLevel {
@@ -11,6 +12,10 @@ struct PriceLevel {
 
     PriceLevel() : totalVolume(0.0) {}
 };
+
+// Define map types to ensure consistency
+using BidMap = std::map<double, PriceLevel, std::greater<double>>;
+using AskMap = std::map<double, PriceLevel, std::less<double>>;
 
 class OrderBook {
 public:
@@ -29,8 +34,8 @@ public:
     double getSpread() const;
 
     // Market depth
-    std::map<double, PriceLevel> getBidLevels() const;
-    std::map<double, PriceLevel> getAskLevels() const;
+    BidMap getBidLevels() const;
+    AskMap getAskLevels() const;
     size_t getDepth(OrderSide side) const;
 
     // Instrument info
@@ -45,13 +50,34 @@ public:
 
 private:
     std::string m_instrument;
-    std::map<double, PriceLevel, std::greater<double>> m_bids;  // Sorted high to low
-    std::map<double, PriceLevel, std::less<double>> m_asks;     // Sorted low to high
+    BidMap m_bids;      // Sorted high to low
+    AskMap m_asks;      // Sorted low to high
     std::unordered_map<std::string, std::shared_ptr<Order>> m_allOrders;
     mutable std::mutex m_mutex;
 
-    void removeOrderFromPriceLevel(std::shared_ptr<Order> order,
-                                 std::map<double, PriceLevel>& levels);
-    void addOrderToPriceLevel(std::shared_ptr<Order> order,
-                            std::map<double, PriceLevel>& levels);
+    // Template helper functions implemented in header
+    template<typename MapType>
+    void removeOrderFromPriceLevel(std::shared_ptr<Order> order, MapType& levels) {
+        auto levelIt = levels.find(order->getPrice());
+        if (levelIt != levels.end()) {
+            auto& level = levelIt->second;
+            level.orders.erase(order->getOrderId());
+            level.totalVolume -= order->getRemainingAmount();
+            
+            if (level.orders.empty() && std::abs(level.totalVolume) < 1e-10) {
+                levels.erase(levelIt);
+            }
+        }
+    }
+
+    template<typename MapType>
+    void addOrderToPriceLevel(std::shared_ptr<Order> order, MapType& levels) {
+        auto& level = levels[order->getPrice()];
+        level.orders[order->getOrderId()] = order;
+        level.totalVolume += order->getRemainingAmount();
+        
+        if (std::abs(level.totalVolume) < 1e-10) {
+            levels.erase(order->getPrice());
+        }
+    }
 };

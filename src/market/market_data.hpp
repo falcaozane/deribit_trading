@@ -6,11 +6,9 @@
 #include <functional>
 #include "order/orderbook.hpp"
 #include "api/websocket.hpp"
+#include "../types.hpp"
 
-// Callback type definitions
-using MarketDataCallback = std::function<void(const std::string& instrument, 
-                                            const std::string& channel,
-                                            const nlohmann::json& data)>;
+namespace deribit {
 
 class MarketDataManager {
 public:
@@ -23,20 +21,26 @@ public:
     bool isConnected() const;
 
     // Subscription management
+    void subscribe(const std::string& instrument,
+                  bool orderbook = true,
+                  bool trades = true,
+                  bool ticker = false);
+    
+    void unsubscribe(const std::string& instrument,
+                     bool orderbook = true,
+                     bool trades = true,
+                     bool ticker = false);
+
+    // Legacy subscription methods (kept for backward compatibility)
     void subscribeToOrderBook(const std::string& instrument);
     void unsubscribeFromOrderBook(const std::string& instrument);
-    void subscribeToTrades(const std::string& instrument);
-    void unsubscribeFromTrades(const std::string& instrument);
-    void subscribeToTicker(const std::string& instrument);
-    void unsubscribeFromTicker(const std::string& instrument);
 
     // Market data access
     std::shared_ptr<OrderBook> getOrderBook(const std::string& instrument);
     
     // Callback registration
-    void setOrderBookCallback(MarketDataCallback callback);
-    void setTradeCallback(MarketDataCallback callback);
-    void setTickerCallback(MarketDataCallback callback);
+    void setOrderBookCallback(OrderBookCallback callback);
+    void setMarketDataCallback(MarketDataCallback callback);
 
 private:
     // WebSocket message handler
@@ -60,9 +64,8 @@ private:
     std::unordered_map<std::string, bool> m_subscriptions;
 
     // Callbacks
-    MarketDataCallback m_orderBookCallback;
-    MarketDataCallback m_tradeCallback;
-    MarketDataCallback m_tickerCallback;
+    OrderBookCallback m_orderBookCallback;
+    MarketDataCallback m_marketDataCallback;
 
     // Thread safety
     mutable std::mutex m_mutex;
@@ -70,3 +73,5 @@ private:
     // State tracking
     bool m_isConnected;
 };
+
+} // namespace deribit
